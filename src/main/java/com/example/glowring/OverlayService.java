@@ -8,10 +8,12 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Canvas;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.graphics.SweepGradient;
 import android.os.Build;
 import android.os.IBinder;
 import android.view.DisplayCutout;
@@ -107,13 +109,18 @@ public class OverlayService extends Service
         super.onDestroy();
     }
 
-    // Draws a pill-shaped ring: red (top), blue (middle), white (bottom).
+    // Draws a pill-shaped ring whose red/blue/white colors spin around it.
     static class RingView extends View {
         // Edit these three colors to change the flag/ring colors.
-        static final int[] COLORS = {0xFFC6363C, 0xFF0C4076, 0xFFFFFFFF};
+        static final int RED = 0xFFC6363C;
+        static final int BLUE = 0xFF0C4076;
+        static final int WHITE = 0xFFFFFFFF;
 
         private final SharedPreferences sp;
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Matrix m = new Matrix();
+        private SweepGradient shader;
+        private float lastCx = -1, lastCy = -1;
 
         RingView(Context c) {
             super(c);
@@ -133,16 +140,28 @@ public class OverlayService extends Service
             RectF rect = new RectF(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f);
             float corner = h / 2f;
 
-            p.setStrokeWidth(t);
-            float top = rect.top - t / 2f;
-            float band = (h + t) / 3f;
+            if (shader == null || cx != lastCx || cy != lastCy) {
+                shader = new SweepGradient(cx, cy,
+                        new int[]{RED, RED, BLUE, BLUE, WHITE, WHITE},
+                        new float[]{0f, 1f / 3f, 1f / 3f, 2f / 3f, 2f / 3f, 1f});
+                lastCx = cx;
+                lastCy = cy;
+            }
 
-            for (int i = 0; i < 3; i++) {
-                canvas.save();
-                canvas.clipRect(0, top + i * band, getWidth(), top + (i + 1) * band);
-                p.setColor(COLORS[i]);
-                canvas.drawRoundRect(rect, corner, corner, p);
-                canvas.restore();
+            int speed = sp.getInt("spin", 30);
+            double sec = System.nanoTime() / 1e9;
+            float angle = (float) ((sec * speed * 2.0) % 360.0);
+            m.setRotate(angle, cx, cy);
+            shader.setLocalMatrix(m);
+
+            p.setShader(shader);
+            p.setStrokeWidth(t);
+            canvas.drawRoundRect(rect, corner, corner, p);
+
+            if (speed > 0) {
+                int pad = (int) (t + 4 * d);
+                postInvalidateOnAnimation((int) rect.left - pad, (int) rect.top - pad,
+                        (int) rect.right + pad, (int) rect.bottom + pad);
             }
         }
     }
