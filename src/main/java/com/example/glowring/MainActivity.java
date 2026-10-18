@@ -58,7 +58,7 @@ public class MainActivity extends Activity {
 
         addSeek(root, "Width (dp)", "w", 100, 30);
 addSeek(root, "Height (dp)", "h", 50, 12);
-        addSeek(root, "Thickness (dp)", "thick", 12, 3);
+        addSeek(root, "Spin speed (0 = still)", "spin", 100, 30);
         addSeek(root, "Horizontal position (50 = center)", "x", 100, 50);
         addSeek(root, "Vertical position (dp from top)", "y", 60, 14);
 
