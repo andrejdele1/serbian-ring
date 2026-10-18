@@ -56,7 +56,8 @@ public class MainActivity extends Activity {
         stop.setOnClickListener(v -> stopService(new Intent(this, OverlayService.class)));
         root.addView(stop);
 
-        addSeek(root, "Radius (dp)", "radius", 40, 9);
+        addSeek(root, "Width (dp)", "w", 100, 30);
+addSeek(root, "Height (dp)", "h", 50, 12);
         addSeek(root, "Thickness (dp)", "thick", 12, 3);
         addSeek(root, "Horizontal position (50 = center)", "x", 100, 50);
         addSeek(root, "Vertical position (dp from top)", "y", 60, 14);
