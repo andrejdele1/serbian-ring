@@ -11,6 +11,7 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.os.Build;
 import android.os.IBinder;
 import android.view.DisplayCutout;
@@ -71,24 +72,26 @@ public class OverlayService extends Service
         ring.post(this::autoDetect);
     }
 
-    // Try to read the camera hole position from the system, once.
+    // Read the camera cutout size and position from the system, once.
     private void autoDetect() {
-        if (sp.getBoolean("calibrated", false)) return;
+        if (sp.getBoolean("calibrated2", false)) return;
         WindowInsets wi = ring.getRootWindowInsets();
         if (wi == null) return;
         DisplayCutout dc = wi.getDisplayCutout();
         if (dc == null || dc.getBoundingRects().isEmpty()) return;
         Rect r = dc.getBoundingRects().get(0);
         float d = getResources().getDisplayMetrics().density;
-        int w = getResources().getDisplayMetrics().widthPixels;
-        int x = Math.round((r.centerX() - w / 2f) / d) + 50;
+        int screenW = getResources().getDisplayMetrics().widthPixels;
+        int x = Math.round((r.centerX() - screenW / 2f) / d) + 50;
         int y = Math.round(r.centerY() / d);
-        int radius = Math.round(r.width() / 2f / d) + 2;
+        int w = Math.round(r.width() / d) + 4;
+        int h = Math.round(r.height() / d) + 4;
         sp.edit()
                 .putInt("x", Math.max(0, Math.min(100, x)))
                 .putInt("y", Math.max(0, Math.min(60, y)))
-                .putInt("radius", Math.max(1, Math.min(40, radius)))
-                .putBoolean("calibrated", true)
+                .putInt("w", Math.max(2, Math.min(100, w)))
+                .putInt("h", Math.max(2, Math.min(50, h)))
+                .putBoolean("calibrated2", true)
                 .apply();
     }
 
@@ -104,7 +107,7 @@ public class OverlayService extends Service
         super.onDestroy();
     }
 
-    // Draws the ring: red (top), blue (middle), white (bottom).
+    // Draws a pill-shaped ring: red (top), blue (middle), white (bottom).
     static class RingView extends View {
         // Edit these three colors to change the flag/ring colors.
         static final int[] COLORS = {0xFFC6363C, 0xFF0C4076, 0xFFFFFFFF};
@@ -121,20 +124,24 @@ public class OverlayService extends Service
         @Override
         protected void onDraw(Canvas canvas) {
             float d = getResources().getDisplayMetrics().density;
-            float r = Math.max(1, sp.getInt("radius", 9)) * d;
+            float w = Math.max(2, sp.getInt("w", 30)) * d;
+            float h = Math.max(2, sp.getInt("h", 12)) * d;
             float t = Math.max(1, sp.getInt("thick", 3)) * d;
             float cx = getWidth() / 2f + (sp.getInt("x", 50) - 50) * d;
             float cy = sp.getInt("y", 14) * d;
 
+            RectF rect = new RectF(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f);
+            float corner = h / 2f;
+
             p.setStrokeWidth(t);
-            float top = cy - r - t / 2f;
-            float h = (2 * r + t) / 3f;
+            float top = rect.top - t / 2f;
+            float band = (h + t) / 3f;
 
             for (int i = 0; i < 3; i++) {
                 canvas.save();
-                canvas.clipRect(0, top + i * h, getWidth(), top + (i + 1) * h);
+                canvas.clipRect(0, top + i * band, getWidth(), top + (i + 1) * band);
                 p.setColor(COLORS[i]);
-                canvas.drawCircle(cx, cy, r, p);
+                canvas.drawRoundRect(rect, corner, corner, p);
                 canvas.restore();
             }
         }
