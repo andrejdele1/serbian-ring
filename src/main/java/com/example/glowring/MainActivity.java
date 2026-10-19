@@ -457,7 +457,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void addColor() {
+        private void addColor() {
         int[] c = palette();
         if (c.length >= 8) {
             Toast.makeText(this, "Maximum is 8 colors", Toast.LENGTH_SHORT).show();
@@ -508,4 +508,162 @@ public class MainActivity extends Activity {
         b.setView(box);
         b.setPositiveButton("Save", (dlg, which) -> {
             int[] c = palette();
-   
+            if (index < c.length) {
+                c[index] = Color.HSVToColor(hsv);
+                setPalette(c);
+            }
+        });
+        b.setNegativeButton("Cancel", null);
+        if (cols.length > 1) {
+            b.setNeutralButton("Remove", (dlg, which) -> {
+                int[] c = palette();
+                if (c.length > 1 && index < c.length) {
+                    int[] n = new int[c.length - 1];
+                    int j = 0;
+                    for (int i = 0; i < c.length; i++) {
+                        if (i != index) n[j++] = c[i];
+                    }
+                    setPalette(n);
+                }
+            });
+        }
+        b.show();
+    }
+
+    private void dialogSeek(LinearLayout box, String label, int max, int cur, IntConsumer cb) {
+        TextView t = tv(label, 13, cSub, false);
+        t.setPadding(0, dp(12), 0, 0);
+        box.addView(t);
+        SeekBar sb = new SeekBar(this);
+        sb.setMax(max);
+        sb.setProgress(cur);
+        sb.setProgressTintList(ColorStateList.valueOf(cAccent));
+        sb.setThumbTintList(ColorStateList.valueOf(cAccent));
+        sb.setProgressBackgroundTintList(ColorStateList.valueOf(cTrack));
+        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar s, int value, boolean fromUser) {
+                cb.accept(value);
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) {}
+            @Override public void onStopTrackingTouch(SeekBar s) {}
+        });
+        box.addView(sb, new LinearLayout.LayoutParams(MATCH, WRAP));
+    }
+
+    // ---------- notification access ----------
+
+    private boolean notifAccess() {
+        String s = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
+        return s != null && s.contains(getPackageName());
+    }
+
+    private void updateNotifStatus() {
+        if (notifStatus == null) return;
+        notifStatus.setText(notifAccess()
+                ? "Notification access: ON. The ring flashes when a notification arrives."
+                : "Notification access: OFF. Turn it on so the ring can flash on notifications.");
+    }
+
+    // ---------- saved looks ----------
+
+    private void askSaveName(int n) {
+        EditText et = new EditText(this);
+        et.setSingleLine(true);
+        et.setText(sp.getString("slot" + n + "_name", "Look " + n));
+        et.setTextColor(cText);
+        et.setSelectAllOnFocus(true);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setPadding(dp(22), dp(8), dp(22), 0);
+        box.addView(et, new LinearLayout.LayoutParams(MATCH, WRAP));
+
+        new AlertDialog.Builder(this, dialogTheme())
+                .setTitle("Name this look")
+                .setView(box)
+                .setPositiveButton("Save", (dlg, which) -> {
+                    saveSlot(n, et.getText().toString().trim());
+                    buildUi();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void saveSlot(int n, String name) {
+        if (name.isEmpty()) name = "Look " + n;
+        try {
+            JSONObject o = new JSONObject();
+            for (int i = 0; i < INT_KEYS.length; i++) {
+                o.put(INT_KEYS[i], sp.getInt(INT_KEYS[i], INT_DEFS[i]));
+            }
+            for (int i = 0; i < BOOL_KEYS.length; i++) {
+                o.put(BOOL_KEYS[i], sp.getBoolean(BOOL_KEYS[i], BOOL_DEFS[i]));
+            }
+            o.put("colors", sp.getString("colors", OverlayService.DEFAULT_COLORS));
+            sp.edit()
+                    .putString("slot" + n, o.toString())
+                    .putString("slot" + n + "_name", name)
+                    .apply();
+            Toast.makeText(this, "Saved: " + name, Toast.LENGTH_SHORT).show();
+        } catch (JSONException e) {
+            Toast.makeText(this, "Could not save", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void loadSlot(int n) {
+        String js = sp.getString("slot" + n, null);
+        if (js == null) {
+            Toast.makeText(this, "That slot is empty", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            JSONObject o = new JSONObject(js);
+            SharedPreferences.Editor ed = sp.edit();
+            for (String k : INT_KEYS) {
+                if (o.has(k)) ed.putInt(k, o.getInt(k));
+            }
+            for (String k : BOOL_KEYS) {
+                if (o.has(k)) ed.putBoolean(k, o.getBoolean(k));
+            }
+            if (o.has("colors")) ed.putString("colors", o.getString("colors"));
+            ed.apply();
+            buildUi();
+        } catch (JSONException e) {
+            Toast.makeText(this, "Could not load", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    // The little scale under each slider: tick marks with numbers.
+    static class TicksView extends View {
+        private final int max, step, pad;
+        private final float d;
+        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        TicksView(Context c, int max, int step, int pad, int color) {
+            super(c);
+            this.max = max;
+            this.step = step;
+            this.pad = pad;
+            this.d = c.getResources().getDisplayMetrics().density;
+            p.setColor(color);
+            p.setTextSize(10 * d);
+            p.setTextAlign(Paint.Align.CENTER);
+            p.setStrokeWidth(1.5f * d);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            float w = getWidth() - 2f * pad;
+            for (int v = 0; v <= max; v += step) {
+                float x = pad + w * v / max;
+                canvas.drawLine(x, 0, x, 5 * d, p);
+                canvas.drawText(String.valueOf(v), x, 18 * d, p);
+                int mid = v + step / 2;
+                if (step % 2 == 0 && mid < max) {
+                    float x2 = pad + w * mid / max;
+                    canvas.drawLine(x2, 0, x2, 3 * d, p);
+                }
+            }
+        }
+    }
+                    }
