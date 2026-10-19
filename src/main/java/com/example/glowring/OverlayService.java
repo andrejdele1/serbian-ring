@@ -21,8 +21,7 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 
-public class OverlayService extends Service
-        implements SharedPreferences.OnSharedPreferenceChangeListener {
+public class OverlayService extends Service {
 
     private WindowManager wm;
     private RingView ring;
@@ -53,7 +52,7 @@ public class OverlayService extends Service
         startForeground(1, n);
 
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-        ring = new RingView(this);
+        ring = new RingView(this, false);
 
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -70,13 +69,12 @@ public class OverlayService extends Service
         }
         wm.addView(ring, lp);
 
-        sp.registerOnSharedPreferenceChangeListener(this);
         ring.post(this::autoDetect);
     }
 
     // Read the camera cutout size and position from the system, once.
     private void autoDetect() {
-        if (sp.getBoolean("calibrated2", false)) return;
+        if (sp.getBoolean("calibrated3", false)) return;
         WindowInsets wi = ring.getRootWindowInsets();
         if (wi == null) return;
         DisplayCutout dc = wi.getDisplayCutout();
@@ -84,48 +82,58 @@ public class OverlayService extends Service
         Rect r = dc.getBoundingRects().get(0);
         float d = getResources().getDisplayMetrics().density;
         int screenW = getResources().getDisplayMetrics().widthPixels;
-        int x = Math.round((r.centerX() - screenW / 2f) / d) + 50;
-        int y = Math.round(r.centerY() / d);
+        int px = Math.round((r.centerX() - screenW / 2f) / d) + 300;
+        int py = Math.round(r.centerY() / d);
         int w = Math.round(r.width() / d) + 4;
         int h = Math.round(r.height() / d) + 4;
         sp.edit()
-                .putInt("x", Math.max(0, Math.min(100, x)))
-                .putInt("y", Math.max(0, Math.min(60, y)))
-                .putInt("w", Math.max(2, Math.min(100, w)))
-                .putInt("h", Math.max(2, Math.min(50, h)))
-                .putBoolean("calibrated2", true)
+                .putInt("px", Math.max(0, Math.min(600, px)))
+                .putInt("py", Math.max(0, Math.min(1000, py)))
+                .putInt("w", Math.max(2, Math.min(500, w)))
+                .putInt("h", Math.max(2, Math.min(300, h)))
+                .putBoolean("calibrated3", true)
                 .apply();
     }
 
     @Override
-    public void onSharedPreferenceChanged(SharedPreferences prefs, String key) {
-        if (ring != null) ring.invalidate();
-    }
-
-    @Override
     public void onDestroy() {
-        sp.unregisterOnSharedPreferenceChangeListener(this);
         if (ring != null) wm.removeView(ring);
         super.onDestroy();
     }
 
-    // Draws a pill-shaped ring whose red/blue/white colors spin around it.
+    // Draws the spinning red/blue/white ring. Also used for the preview in the app.
     static class RingView extends View {
-        // Edit these three colors to change the flag/ring colors.
         static final int RED = 0xFFC6363C;
         static final int BLUE = 0xFF0C4076;
         static final int WHITE = 0xFFFFFFFF;
 
         private final SharedPreferences sp;
+        private final boolean preview;
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Matrix m = new Matrix();
         private SweepGradient shader;
         private float lastCx = -1, lastCy = -1;
 
-        RingView(Context c) {
+        private final SharedPreferences.OnSharedPreferenceChangeListener listener =
+                (prefs, key) -> invalidate();
+
+        RingView(Context c, boolean preview) {
             super(c);
+            this.preview = preview;
             sp = c.getSharedPreferences("ring", Context.MODE_PRIVATE);
             p.setStyle(Paint.Style.STROKE);
+        }
+
+        @Override
+        protected void onAttachedToWindow() {
+            super.onAttachedToWindow();
+            sp.registerOnSharedPreferenceChangeListener(listener);
+        }
+
+        @Override
+        protected void onDetachedFromWindow() {
+            sp.unregisterOnSharedPreferenceChangeListener(listener);
+            super.onDetachedFromWindow();
         }
 
         @Override
@@ -134,11 +142,21 @@ public class OverlayService extends Service
             float w = Math.max(2, sp.getInt("w", 30)) * d;
             float h = Math.max(2, sp.getInt("h", 12)) * d;
             float t = Math.max(1, sp.getInt("thick", 3)) * d;
-            float cx = getWidth() / 2f + (sp.getInt("x", 50) - 50) * d;
-            float cy = sp.getInt("y", 14) * d;
+            float roundPct = sp.getInt("round", 100) / 100f;
+            float rot = sp.getInt("rot", 0);
+            int speed = sp.getInt("spin", 30);
 
-            RectF rect = new RectF(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f);
-            float corner = h / 2f;
+            float baseW = preview
+                    ? getResources().getDisplayMetrics().widthPixels
+                    : getWidth();
+            float cx = baseW / 2f + (sp.getInt("px", 300) - 300) * d;
+            float cy = sp.getInt("py", 14) * d;
+
+            if (preview) {
+                canvas.drawColor(0xFF1E1E1E);
+                float s = getWidth() / baseW;
+                canvas.scale(s, s);
+            }
 
             if (shader == null || cx != lastCx || cy != lastCy) {
                 shader = new SweepGradient(cx, cy,
@@ -148,7 +166,6 @@ public class OverlayService extends Service
                 lastCy = cy;
             }
 
-            int speed = sp.getInt("spin", 30);
             double sec = System.nanoTime() / 1e9;
             float angle = (float) ((sec * speed * 2.0) % 360.0);
             m.setRotate(angle, cx, cy);
@@ -156,13 +173,23 @@ public class OverlayService extends Service
 
             p.setShader(shader);
             p.setStrokeWidth(t);
+
+            canvas.save();
+            canvas.rotate(rot, cx, cy);
+            RectF rect = new RectF(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f);
+            float corner = roundPct * Math.min(w, h) / 2f;
             canvas.drawRoundRect(rect, corner, corner, p);
+            canvas.restore();
 
             if (speed > 0) {
-                int pad = (int) (t + 4 * d);
-                postInvalidateOnAnimation((int) rect.left - pad, (int) rect.top - pad,
-                        (int) rect.right + pad, (int) rect.bottom + pad);
+                if (preview) {
+                    postInvalidateOnAnimation();
+                } else {
+                    int r = (int) (Math.hypot(w, h) / 2 + t + 8 * d);
+                    postInvalidateOnAnimation((int) cx - r, (int) cy - r,
+                            (int) cx + r, (int) cy + r);
+                }
             }
         }
     }
-        }
+}
