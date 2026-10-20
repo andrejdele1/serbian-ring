@@ -14,12 +14,16 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -31,6 +35,7 @@ import android.widget.Toast;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.function.IntConsumer;
 
@@ -40,39 +45,28 @@ public class MainActivity extends Activity {
     private static final int WRAP = ViewGroup.LayoutParams.WRAP_CONTENT;
 
     // Everything a saved look stores, with default values.
-    private static final String[] INT_KEYS =
-            {"w", "h", "round", "rot", "thick", "spin", "pulse", "px", "py", "tail", "flash"};
-    private static final int[] INT_DEFS =
-            {30, 12, 100, 0, 3, 30, 0, 300, 14, 50, 3};
-    private static final String[] BOOL_KEYS =
-            {"rev", "smooth", "comet", "hide_land", "hide_full"};
-    private static final boolean[] BOOL_DEFS =
-            {false, false, false, true, false};
-
-    private static final String[] FLAG_NAMES =
-            {"Serbia", "Russia", "Ukraine", "Germany", "France", "Italy", "Rainbow", "White"};
-    private static final String[] FLAG_COLORS = {
-            "C6363C,0C4076,FFFFFF",
-            "FFFFFF,0039A6,D52B1E",
-            "0057B7,FFD700",
-            "000000,DD0000,FFCE00",
-            "0055A4,FFFFFF,EF4135",
-            "009246,FFFFFF,CE2B37",
-            "FF0000,FF8000,FFE000,00C000,0060FF,8000C0",
-            "FFFFFF"};
+    private static final String[] INT_KEYS = {"w", "h", "round", "rot", "thick", "spin",
+            "pulse", "px", "py", "tail", "flash", "repeat", "vibrance"};
+    private static final int[] INT_DEFS = {30, 12, 100, 0, 3, 30, 0, 300, 14, 50, 3, 1, 0};
+    private static final String[] BOOL_KEYS = {"rev", "smooth", "comet", "hide_land", "hide_full"};
+    private static final boolean[] BOOL_DEFS = {false, false, false, true, false};
 
     private SharedPreferences sp;
     private float d;
     private boolean dark;
     private int cBg, cCard, cCard2, cText, cSub, cAccent, cTrack;
-    private LinearLayout swatchRow, stripeBox;
-    private TextView notifStatus;
+    private int tab;
+    private FrameLayout content;
+    private LinearLayout tabBar, swatchRow, stripeBox;
+    private Button toggleBtn, notifBtn;
+    private TextView notifStatus, flagLabel;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         sp = getSharedPreferences("ring", MODE_PRIVATE);
         d = getResources().getDisplayMetrics().density;
+        tab = sp.getInt("tab", 0);
 
         if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
@@ -84,6 +78,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         updateNotifStatus();
+        updateToggle();
     }
 
     // ---------- small helpers ----------
@@ -135,7 +130,24 @@ public class MainActivity extends Activity {
                 : android.R.style.Theme_Material_Light_Dialog_Alert;
     }
 
-    // ---------- main screen ----------
+    private int[] themeArray() {
+        return new int[]{cBg, cCard, cText, cSub, cAccent, dark ? 1 : 0};
+    }
+
+    private int[][] pal() {
+        return OverlayService.parsePalette(
+                sp.getString("colors", OverlayService.DEFAULT_COLORS));
+    }
+
+    private void savePal(int[] c, int[] w) {
+        sp.edit()
+                .putString("colors", OverlayService.joinPalette(c, w))
+                .putString("flag", "Custom")
+                .apply();
+        refreshPalette();
+    }
+
+    // ---------- screen frame: header, content, bottom tabs ----------
 
     private void buildUi() {
         dark = sp.getBoolean("dark", true);
@@ -153,17 +165,15 @@ public class MainActivity extends Activity {
                 : (View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
                 | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR));
 
-        ScrollView sv = new ScrollView(this);
-        sv.setBackgroundColor(cBg);
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), dp(16), dp(18), dp(32));
-        sv.addView(root);
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setBackgroundColor(cBg);
 
-        // Header: title + live palette stripe, and the theme switch
-        LinearLayout head = new LinearLayout(this);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(Gravity.CENTER_VERTICAL);
+        // Header: title and palette stripe, plus the Start/Stop button
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        top.setPadding(dp(18), dp(16), dp(18), dp(8));
 
         LinearLayout titles = new LinearLayout(this);
         titles.setOrientation(LinearLayout.VERTICAL);
@@ -178,24 +188,79 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(dp(72), dp(8));
         slp.topMargin = dp(6);
         titles.addView(stripeBox, slp);
-        head.addView(titles, new LinearLayout.LayoutParams(0, WRAP, 1f));
+        top.addView(titles, new LinearLayout.LayoutParams(0, WRAP, 1f));
 
-        Switch themeSw = new Switch(this);
-        themeSw.setText(dark ? "Dark  " : "Light  ");
-        themeSw.setTextColor(cSub);
-        themeSw.setChecked(dark);
-        themeSw.setOnCheckedChangeListener((b, on) -> {
-            sp.edit().putBoolean("dark", on).apply();
-            buildUi();
-        });
-        head.addView(themeSw);
-        root.addView(head);
+        toggleBtn = smallButton("Start", true);
+        toggleBtn.setOnClickListener(v -> toggleRing());
+        top.addView(toggleBtn, new LinearLayout.LayoutParams(WRAP, WRAP));
+        page.addView(top, new LinearLayout.LayoutParams(MATCH, WRAP));
 
-        // Start / Stop
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        Button start = button("Start ring", true);
-        start.setOnClickListener(v -> {
+        content = new FrameLayout(this);
+        page.addView(content, new LinearLayout.LayoutParams(MATCH, 0, 1f));
+
+        tabBar = new LinearLayout(this);
+        tabBar.setOrientation(LinearLayout.HORIZONTAL);
+        tabBar.setBackgroundColor(cCard);
+        String[] names = {"Look", "Shape", "Motion", "More"};
+        for (int i = 0; i < names.length; i++) {
+            final int idx = i;
+            TextView t = tv(names[i], 14, cSub, false);
+            t.setGravity(Gravity.CENTER);
+            t.setPadding(0, dp(14), 0, dp(14));
+            t.setOnClickListener(v -> showTab(idx));
+            tabBar.addView(t, new LinearLayout.LayoutParams(0, WRAP, 1f));
+        }
+        page.addView(tabBar, new LinearLayout.LayoutParams(MATCH, WRAP));
+
+        setContentView(page);
+        showTab(tab);
+        updateToggle();
+    }
+
+    private void showTab(int t) {
+        tab = t;
+        sp.edit().putInt("tab", t).apply();
+        swatchRow = null;
+        flagLabel = null;
+        notifStatus = null;
+        notifBtn = null;
+
+        ScrollView sv = new ScrollView(this);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(18), dp(4), dp(18), dp(24));
+        sv.addView(root);
+
+        switch (t) {
+            case 0:
+                buildLook(root);
+                break;
+            case 1:
+                buildShape(root);
+                break;
+            case 2:
+                buildMotion(root);
+                break;
+            default:
+                buildMore(root);
+                break;
+        }
+        content.removeAllViews();
+        content.addView(sv, new FrameLayout.LayoutParams(MATCH, MATCH));
+
+        for (int i = 0; i < tabBar.getChildCount(); i++) {
+            TextView tvw = (TextView) tabBar.getChildAt(i);
+            boolean sel = i == t;
+            tvw.setTextColor(sel ? cAccent : cSub);
+            tvw.setTypeface(sel ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+        }
+        refreshPalette();
+    }
+
+    private void toggleRing() {
+        if (OverlayService.isRunning()) {
+            stopService(new Intent(this, OverlayService.class));
+        } else {
             if (!Settings.canDrawOverlays(this)) {
                 startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                         Uri.parse("package:" + getPackageName())));
@@ -204,98 +269,133 @@ public class MainActivity extends Activity {
                 return;
             }
             startForegroundService(new Intent(this, OverlayService.class));
-        });
-        Button stop = button("Stop ring", false);
-        stop.setOnClickListener(v -> stopService(new Intent(this, OverlayService.class)));
-        LinearLayout.LayoutParams a1 = new LinearLayout.LayoutParams(0, WRAP, 1f);
-        a1.rightMargin = dp(6);
-        LinearLayout.LayoutParams a2 = new LinearLayout.LayoutParams(0, WRAP, 1f);
-        a2.leftMargin = dp(6);
-        actions.addView(start, a1);
-        actions.addView(stop, a2);
-        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(MATCH, WRAP);
-        alp.topMargin = dp(18);
-        root.addView(actions, alp);
-
-        // Colors
-        LinearLayout colors = card(root, "Colors");
-        colors.addView(tv("Pick a flag or build your own. Stripes run around the ring in order.",
-                13, cSub, false));
-
-        HorizontalScrollView chips = new HorizontalScrollView(this);
-        chips.setHorizontalScrollBarEnabled(false);
-        LinearLayout chipRow = new LinearLayout(this);
-        chipRow.setOrientation(LinearLayout.HORIZONTAL);
-        for (int i = 0; i < FLAG_NAMES.length; i++) {
-            final String cols = FLAG_COLORS[i];
-            Button chip = smallButton(FLAG_NAMES[i], false);
-            chip.setOnClickListener(v -> {
-                sp.edit().putString("colors", cols).apply();
-                refreshPalette();
-            });
-            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(WRAP, WRAP);
-            clp.rightMargin = dp(8);
-            chipRow.addView(chip, clp);
         }
-        chips.addView(chipRow);
-        LinearLayout.LayoutParams chipsLp = new LinearLayout.LayoutParams(MATCH, WRAP);
-        chipsLp.topMargin = dp(12);
-        colors.addView(chips, chipsLp);
+        new Handler(Looper.getMainLooper()).postDelayed(this::updateToggle, 500);
+    }
+
+    private void updateToggle() {
+        if (toggleBtn == null) return;
+        boolean on = OverlayService.isRunning();
+        toggleBtn.setText(on ? "Stop" : "Start");
+        toggleBtn.setBackground(rounded(on ? 0xFFD64545 : cAccent, 14));
+    }
+
+    // ---------- tab: Look ----------
+
+    private void buildLook(LinearLayout root) {
+        // Saved looks
+        LinearLayout looks = card(root, "Saved looks");
+        looks.addView(tv("Tap to load. Long-press to save the current look.", 13, cSub, false));
+        LinearLayout lrow = new LinearLayout(this);
+        lrow.setOrientation(LinearLayout.HORIZONTAL);
+        lrow.setPadding(0, dp(12), 0, 0);
+        for (int i = 1; i <= 3; i++) {
+            final int n = i;
+            String nm = sp.getString("slot" + n + "_name", null);
+            Button b = button(nm != null ? nm : "Empty " + n, nm != null);
+            b.setTextSize(13);
+            b.setSingleLine(true);
+            b.setEllipsize(TextUtils.TruncateAt.END);
+            b.setOnClickListener(v -> {
+                if (sp.getString("slot" + n, null) != null) loadSlot(n);
+                else askSaveName(n);
+            });
+            b.setOnLongClickListener(v -> {
+                askSaveName(n);
+                return true;
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, WRAP, 1f);
+            lp.leftMargin = dp(3);
+            lp.rightMargin = dp(3);
+            lrow.addView(b, lp);
+        }
+        looks.addView(lrow);
+
+        // Flag and colors
+        LinearLayout col = card(root, "Colors");
+
+        LinearLayout frow = new LinearLayout(this);
+        frow.setOrientation(LinearLayout.HORIZONTAL);
+        frow.setGravity(Gravity.CENTER_VERTICAL);
+        flagLabel = tv("", 15, cText, true);
+        frow.addView(flagLabel, new LinearLayout.LayoutParams(0, WRAP, 1f));
+        Button choose = smallButton("Choose flag", true);
+        choose.setOnClickListener(v -> FlagPicker.show(this, themeArray(), entry -> applyFlag(entry)));
+        frow.addView(choose);
+        LinearLayout.LayoutParams frowLp = new LinearLayout.LayoutParams(MATCH, WRAP);
+        frowLp.topMargin = dp(8);
+        col.addView(frow, frowLp);
+
+        String rec = sp.getString("recent", "");
+        if (!rec.isEmpty()) {
+            HorizontalScrollView hs = new HorizontalScrollView(this);
+            hs.setHorizontalScrollBarEnabled(false);
+            LinearLayout chips = new LinearLayout(this);
+            chips.setOrientation(LinearLayout.HORIZONTAL);
+            for (String nm : rec.split("\\|")) {
+                final String entry = Flags.byName(nm);
+                if (entry == null) continue;
+                Button chip = smallButton(nm, false);
+                chip.setOnClickListener(v -> applyFlag(entry));
+                LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(WRAP, WRAP);
+                clp.rightMargin = dp(8);
+                chips.addView(chip, clp);
+            }
+            hs.addView(chips);
+            LinearLayout.LayoutParams hsLp = new LinearLayout.LayoutParams(MATCH, WRAP);
+            hsLp.topMargin = dp(12);
+            col.addView(hs, hsLp);
+        }
 
         TextView yours = tv("Your colors (tap one to edit)", 13, cSub, false);
         yours.setPadding(0, dp(16), 0, dp(8));
-        colors.addView(yours);
+        col.addView(yours);
 
         HorizontalScrollView swScroll = new HorizontalScrollView(this);
         swScroll.setHorizontalScrollBarEnabled(false);
         swatchRow = new LinearLayout(this);
         swatchRow.setOrientation(LinearLayout.HORIZONTAL);
         swScroll.addView(swatchRow);
-        colors.addView(swScroll);
-        refreshPalette();
+        col.addView(swScroll);
 
         Button add = smallButton("+ Add color", false);
         add.setOnClickListener(v -> addColor());
         LinearLayout.LayoutParams addLp = new LinearLayout.LayoutParams(WRAP, WRAP);
         addLp.topMargin = dp(12);
-        colors.addView(add, addLp);
-        addSwitch(colors, "Blend colors smoothly", "smooth", false);
+        col.addView(add, addLp);
 
-        // Shape
-        LinearLayout shape = card(root, "Shape");
-        addSeek(shape, "Width (dp)", "w", 500, 30, 100);
-        addSeek(shape, "Height (dp)", "h", 300, 12, 50);
-        addSeek(shape, "Corner roundness", "round", 100, 100, 25);
-        addSeek(shape, "Rotation (degrees)", "rot", 360, 0, 90);
-        addSeek(shape, "Thickness (dp)", "thick", 30, 3, 5);
+        addSwitch(col, "Blend colors smoothly", "smooth", false);
+        addSeek(col, "Repeat pattern (times around the ring)", "repeat", 20, 1, 5);
+        addSeek(col, "Vibrance (stronger, brighter colors)", "vibrance", 100, 0, 25);
+    }
 
-        // Animation and style
-        LinearLayout anim = card(root, "Animation & style");
-        addSeek(anim, "Spin speed (0 = still)", "spin", 100, 30, 10);
-        addSwitch(anim, "Reverse direction", "rev", false);
-        addSeek(anim, "Pulse speed (0 = off)", "pulse", 100, 0, 25);
-        addSwitch(anim, "Comet mode (bright head, fading tail)", "comet", false);
-        addSeek(anim, "Comet tail length (%)", "tail", 90, 50, 30);
+    private void applyFlag(String entry) {
+        String name = Flags.name(entry);
+        SharedPreferences.Editor ed = sp.edit();
+        ed.putString("colors", Flags.spec(entry));
+        ed.putInt("repeat", Flags.repeat(entry));
+        ed.putString("flag", name);
 
-        // Notification flash
-        LinearLayout notif = card(root, "Notification flash");
-        notifStatus = tv("", 13, cSub, false);
-        notif.addView(notifStatus);
-        updateNotifStatus();
-        Button grant = smallButton("Open notification access settings", false);
-        grant.setOnClickListener(v -> startActivity(
-                new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
-        LinearLayout.LayoutParams gLp = new LinearLayout.LayoutParams(WRAP, WRAP);
-        gLp.topMargin = dp(10);
-        notif.addView(grant, gLp);
-        addSeek(notif, "Flash duration (seconds, 0 = off)", "flash", 10, 3, 2);
+        ArrayList<String> list = new ArrayList<>();
+        list.add(name);
+        for (String s : sp.getString("recent", "").split("\\|")) {
+            if (!s.isEmpty() && !s.equals(name) && list.size() < 6) list.add(s);
+        }
+        ed.putString("recent", TextUtils.join("|", list));
+        ed.apply();
+        showTab(tab);
+    }
 
-        // Auto-hide
-        LinearLayout hide = card(root, "Auto-hide");
-        addSwitch(hide, "Hide in landscape (videos, games)", "hide_land", true);
-        addSwitch(hide, "Hide when the status bar is hidden (experimental)", "hide_full", false);
+    // ---------- tab: Shape ----------
 
-        // Position
+    private void buildShape(LinearLayout root) {
+        LinearLayout size = card(root, "Size & shape");
+        addSeek(size, "Width (dp)", "w", 500, 30, 100);
+        addSeek(size, "Height (dp)", "h", 300, 12, 50);
+        addSeek(size, "Corner roundness", "round", 100, 100, 25);
+        addSeek(size, "Rotation (degrees)", "rot", 360, 0, 90);
+        addSeek(size, "Thickness (dp)", "thick", 30, 3, 5);
+
         LinearLayout pos = card(root, "Position");
         SeekBar sx = addSeek(pos, "Horizontal (300 = center)", "px", 600, 300, 100);
         SeekBar sy = addSeek(pos, "Vertical (dp from top)", "py", 1000, 14, 200);
@@ -311,35 +411,87 @@ public class MainActivity extends Activity {
         nudge(row, "\u25B2", sy, -1);
         nudge(row, "\u25BC", sy, 1);
         pos.addView(row);
-
-        // Saved looks
-        LinearLayout looks = card(root, "Saved looks");
-        looks.addView(tv("Save everything (colors, shape, speed, position) and load it later.",
-                13, cSub, false));
-        for (int i = 1; i <= 3; i++) {
-            final int n = i;
-            LinearLayout lrow = new LinearLayout(this);
-            lrow.setOrientation(LinearLayout.HORIZONTAL);
-            lrow.setGravity(Gravity.CENTER_VERTICAL);
-            lrow.setPadding(0, dp(12), 0, 0);
-
-            String nm = sp.getString("slot" + n + "_name", null);
-            TextView label = tv(nm != null ? nm : "Slot " + n + " (empty)", 15, cText, false);
-            lrow.addView(label, new LinearLayout.LayoutParams(0, WRAP, 1f));
-
-            Button save = smallButton("Save", false);
-            save.setOnClickListener(v -> askSaveName(n));
-            Button load = smallButton("Load", true);
-            load.setOnClickListener(v -> loadSlot(n));
-            LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(WRAP, WRAP);
-            sLp.rightMargin = dp(8);
-            lrow.addView(save, sLp);
-            lrow.addView(load, new LinearLayout.LayoutParams(WRAP, WRAP));
-            looks.addView(lrow);
-        }
-
-        setContentView(sv);
     }
+
+    // ---------- tab: Motion ----------
+
+    private void buildMotion(LinearLayout root) {
+        LinearLayout spin = card(root, "Spin");
+        addSeek(spin, "Spin speed (0 = still)", "spin", 100, 30, 10);
+        addSwitch(spin, "Reverse direction", "rev", false);
+
+        LinearLayout fx = card(root, "Effects");
+        addSeek(fx, "Pulse speed (0 = off)", "pulse", 100, 0, 25);
+        addSwitch(fx, "Comet mode (bright head, fading tail)", "comet", false);
+        addSeek(fx, "Comet tail length (%)", "tail", 90, 50, 30);
+
+        LinearLayout smooth = card(root, "Smoothness");
+        smooth.addView(tv("Higher is smoother but uses more battery. Max matches your screen's refresh rate.",
+                13, cSub, false));
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp(12), 0, 0);
+        String[] labels = {"30 fps", "60 fps", "Max"};
+        int cur = sp.getInt("fpsmode", 1);
+        for (int i = 0; i < 3; i++) {
+            final int mode = i;
+            Button b = button(labels[i], i == cur);
+            b.setOnClickListener(v -> {
+                sp.edit().putInt("fpsmode", mode).apply();
+                showTab(2);
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, WRAP, 1f);
+            lp.leftMargin = dp(3);
+            lp.rightMargin = dp(3);
+            row.addView(b, lp);
+        }
+        smooth.addView(row);
+    }
+
+    // ---------- tab: More ----------
+
+    private void buildMore(LinearLayout root) {
+        LinearLayout notif = card(root, "Notification flash");
+        notifStatus = tv("", 13, cSub, false);
+        notif.addView(notifStatus);
+        notifBtn = smallButton("Open notification access settings", false);
+        notifBtn.setOnClickListener(v -> startActivity(
+                new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
+        LinearLayout.LayoutParams nLp = new LinearLayout.LayoutParams(WRAP, WRAP);
+        nLp.topMargin = dp(10);
+        notif.addView(notifBtn, nLp);
+        updateNotifStatus();
+        addSeek(notif, "Flash duration (seconds, 0 = off)", "flash", 10, 3, 2);
+
+        LinearLayout hide = card(root, "Auto-hide");
+        addSwitch(hide, "Hide in landscape (videos, games)", "hide_land", true);
+        addSwitch(hide, "Hide when the status bar is hidden (experimental)", "hide_full", false);
+
+        LinearLayout cam = card(root, "Camera hole");
+        cam.addView(tv("Re-detects the size and position of your camera hole the next time the ring starts.",
+                13, cSub, false));
+        Button redetect = smallButton("Re-detect camera hole", false);
+        redetect.setOnClickListener(v -> {
+            sp.edit().remove("calibrated3").apply();
+            Toast.makeText(this, "Stop and start the ring to re-detect", Toast.LENGTH_SHORT).show();
+        });
+        LinearLayout.LayoutParams rLp = new LinearLayout.LayoutParams(WRAP, WRAP);
+        rLp.topMargin = dp(10);
+        cam.addView(redetect, rLp);
+
+        LinearLayout look = card(root, "Appearance");
+        Switch themeSw = new Switch(this);
+        themeSw.setText(dark ? "Dark theme  " : "Light theme  ");
+        themeSw.setTextColor(cText);
+        themeSw.setChecked(dark);
+        themeSw.setOnCheckedChangeListener((b, on) -> {
+            sp.edit().putBoolean("dark", on).apply();
+            buildUi();
+        });
+        look.addView(themeSw);
+    }
+
+    // ---------- building blocks ----------
 
     private LinearLayout card(LinearLayout root, String title) {
         LinearLayout c = new LinearLayout(this);
@@ -348,7 +500,7 @@ public class MainActivity extends Activity {
         c.setPadding(dp(18), dp(16), dp(18), dp(18));
         c.addView(tv(title, 18, cAccent, true));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(MATCH, WRAP);
-        lp.topMargin = dp(16);
+        lp.topMargin = dp(14);
         root.addView(c, lp);
         return c;
     }
@@ -362,308 +514,4 @@ public class MainActivity extends Activity {
         head.setPadding(0, dp(16), 0, 0);
         TextView name = tv(label, 14, cText, false);
         TextView val = tv(String.valueOf(cur), 14, cAccent, true);
-        head.addView(name, new LinearLayout.LayoutParams(0, WRAP, 1f));
-        head.addView(val);
-        parent.addView(head);
-
-        int pad = dp(14);
-        SeekBar sb = new SeekBar(this);
-        sb.setPadding(pad, dp(8), pad, dp(2));
-        sb.setMax(max);
-        sb.setProgress(cur);
-        sb.setProgressTintList(ColorStateList.valueOf(cAccent));
-        sb.setThumbTintList(ColorStateList.valueOf(cAccent));
-        sb.setProgressBackgroundTintList(ColorStateList.valueOf(cTrack));
-        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar s, int value, boolean fromUser) {
-                sp.edit().putInt(key, value).apply();
-                val.setText(String.valueOf(value));
-            }
-            @Override public void onStartTrackingTouch(SeekBar s) {}
-            @Override public void onStopTrackingTouch(SeekBar s) {}
-        });
-        parent.addView(sb, new LinearLayout.LayoutParams(MATCH, WRAP));
-
-        parent.addView(new TicksView(this, max, step, pad, cSub),
-                new LinearLayout.LayoutParams(MATCH, dp(22)));
-        return sb;
-    }
-
-    private void addSwitch(LinearLayout parent, String label, String key, boolean def) {
-        Switch s = new Switch(this);
-        s.setText(label);
-        s.setTextColor(cText);
-        s.setTextSize(14);
-        s.setChecked(sp.getBoolean(key, def));
-        ColorStateList cs = new ColorStateList(
-                new int[][]{{android.R.attr.state_checked}, {}},
-                new int[]{cAccent, cSub});
-        s.setThumbTintList(cs);
-        s.setTrackTintList(cs);
-        s.setOnCheckedChangeListener((b, on) -> sp.edit().putBoolean(key, on).apply());
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(MATCH, WRAP);
-        lp.topMargin = dp(14);
-        parent.addView(s, lp);
-    }
-
-    private void nudge(LinearLayout row, String text, SeekBar sb, int delta) {
-        Button b = button(text, false);
-        b.setOnClickListener(v -> sb.setProgress(
-                Math.max(0, Math.min(sb.getMax(), sb.getProgress() + delta))));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, WRAP, 1f);
-        lp.leftMargin = dp(3);
-        lp.rightMargin = dp(3);
-        row.addView(b, lp);
-    }
-
-    // ---------- colors ----------
-
-    private int[] palette() {
-        return OverlayService.parseColors(
-                sp.getString("colors", OverlayService.DEFAULT_COLORS));
-    }
-
-    private void setPalette(int[] c) {
-        sp.edit().putString("colors", OverlayService.joinColors(c)).apply();
-        refreshPalette();
-    }
-
-    private void refreshPalette() {
-        int[] cols = palette();
-
-        if (swatchRow != null) {
-            swatchRow.removeAllViews();
-            for (int i = 0; i < cols.length; i++) {
-                final int idx = i;
-                View swatch = new View(this);
-                GradientDrawable gd = rounded(cols[i], 12);
-                gd.setStroke(dp(2), cSub);
-                swatch.setBackground(gd);
-                swatch.setOnClickListener(v -> showColorDialog(idx));
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(48), dp(48));
-                lp.rightMargin = dp(8);
-                swatchRow.addView(swatch, lp);
-            }
-        }
-
-        if (stripeBox != null) {
-            stripeBox.removeAllViews();
-            for (int c : cols) {
-                View seg = new View(this);
-                seg.setBackgroundColor(c);
-                stripeBox.addView(seg, new LinearLayout.LayoutParams(0, MATCH, 1f));
-            }
-        }
-    }
-
-        private void addColor() {
-        int[] c = palette();
-        if (c.length >= 8) {
-            Toast.makeText(this, "Maximum is 8 colors", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        int[] n = Arrays.copyOf(c, c.length + 1);
-        n[c.length] = 0xFFFFFFFF;
-        setPalette(n);
-        showColorDialog(n.length - 1);
-    }
-
-    private void showColorDialog(int index) {
-        int[] cols = palette();
-        final float[] hsv = new float[3];
-        Color.colorToHSV(cols[index], hsv);
-
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(22), dp(12), dp(22), 0);
-
-        View preview = new View(this);
-        box.addView(preview, new LinearLayout.LayoutParams(MATCH, dp(56)));
-        TextView hex = tv("", 14, cSub, false);
-        hex.setPadding(0, dp(8), 0, 0);
-        box.addView(hex);
-
-        Runnable update = () -> {
-            int c = Color.HSVToColor(hsv);
-            preview.setBackground(rounded(c, 12));
-            hex.setText(String.format("#%06X", c & 0xFFFFFF));
-        };
-        dialogSeek(box, "Hue", 360, Math.round(hsv[0]), v -> {
-            hsv[0] = v;
-            update.run();
-        });
-        dialogSeek(box, "Saturation", 100, Math.round(hsv[1] * 100), v -> {
-            hsv[1] = v / 100f;
-            update.run();
-        });
-        dialogSeek(box, "Brightness", 100, Math.round(hsv[2] * 100), v -> {
-            hsv[2] = v / 100f;
-            update.run();
-        });
-        update.run();
-
-        AlertDialog.Builder b = new AlertDialog.Builder(this, dialogTheme());
-        b.setTitle("Color " + (index + 1));
-        b.setView(box);
-        b.setPositiveButton("Save", (dlg, which) -> {
-            int[] c = palette();
-            if (index < c.length) {
-                c[index] = Color.HSVToColor(hsv);
-                setPalette(c);
-            }
-        });
-        b.setNegativeButton("Cancel", null);
-        if (cols.length > 1) {
-            b.setNeutralButton("Remove", (dlg, which) -> {
-                int[] c = palette();
-                if (c.length > 1 && index < c.length) {
-                    int[] n = new int[c.length - 1];
-                    int j = 0;
-                    for (int i = 0; i < c.length; i++) {
-                        if (i != index) n[j++] = c[i];
-                    }
-                    setPalette(n);
-                }
-            });
-        }
-        b.show();
-    }
-
-    private void dialogSeek(LinearLayout box, String label, int max, int cur, IntConsumer cb) {
-        TextView t = tv(label, 13, cSub, false);
-        t.setPadding(0, dp(12), 0, 0);
-        box.addView(t);
-        SeekBar sb = new SeekBar(this);
-        sb.setMax(max);
-        sb.setProgress(cur);
-        sb.setProgressTintList(ColorStateList.valueOf(cAccent));
-        sb.setThumbTintList(ColorStateList.valueOf(cAccent));
-        sb.setProgressBackgroundTintList(ColorStateList.valueOf(cTrack));
-        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar s, int value, boolean fromUser) {
-                cb.accept(value);
-            }
-            @Override public void onStartTrackingTouch(SeekBar s) {}
-            @Override public void onStopTrackingTouch(SeekBar s) {}
-        });
-        box.addView(sb, new LinearLayout.LayoutParams(MATCH, WRAP));
-    }
-
-    // ---------- notification access ----------
-
-    private boolean notifAccess() {
-        String s = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
-        return s != null && s.contains(getPackageName());
-    }
-
-    private void updateNotifStatus() {
-        if (notifStatus == null) return;
-        notifStatus.setText(notifAccess()
-                ? "Notification access: ON. The ring flashes when a notification arrives."
-                : "Notification access: OFF. Turn it on so the ring can flash on notifications.");
-    }
-
-    // ---------- saved looks ----------
-
-    private void askSaveName(int n) {
-        EditText et = new EditText(this);
-        et.setSingleLine(true);
-        et.setText(sp.getString("slot" + n + "_name", "Look " + n));
-        et.setTextColor(cText);
-        et.setSelectAllOnFocus(true);
-
-        LinearLayout box = new LinearLayout(this);
-        box.setPadding(dp(22), dp(8), dp(22), 0);
-        box.addView(et, new LinearLayout.LayoutParams(MATCH, WRAP));
-
-        new AlertDialog.Builder(this, dialogTheme())
-                .setTitle("Name this look")
-                .setView(box)
-                .setPositiveButton("Save", (dlg, which) -> {
-                    saveSlot(n, et.getText().toString().trim());
-                    buildUi();
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
-    }
-
-    private void saveSlot(int n, String name) {
-        if (name.isEmpty()) name = "Look " + n;
-        try {
-            JSONObject o = new JSONObject();
-            for (int i = 0; i < INT_KEYS.length; i++) {
-                o.put(INT_KEYS[i], sp.getInt(INT_KEYS[i], INT_DEFS[i]));
-            }
-            for (int i = 0; i < BOOL_KEYS.length; i++) {
-                o.put(BOOL_KEYS[i], sp.getBoolean(BOOL_KEYS[i], BOOL_DEFS[i]));
-            }
-            o.put("colors", sp.getString("colors", OverlayService.DEFAULT_COLORS));
-            sp.edit()
-                    .putString("slot" + n, o.toString())
-                    .putString("slot" + n + "_name", name)
-                    .apply();
-            Toast.makeText(this, "Saved: " + name, Toast.LENGTH_SHORT).show();
-        } catch (JSONException e) {
-            Toast.makeText(this, "Could not save", Toast.LENGTH_SHORT).show();
-        }
-    }
-
-    private void loadSlot(int n) {
-        String js = sp.getString("slot" + n, null);
-        if (js == null) {
-            Toast.makeText(this, "That slot is empty", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        try {
-            JSONObject o = new JSONObject(js);
-            SharedPreferences.Editor ed = sp.edit();
-            for (String k : INT_KEYS) {
-                if (o.has(k)) ed.putInt(k, o.getInt(k));
-            }
-            for (String k : BOOL_KEYS) {
-                if (o.has(k)) ed.putBoolean(k, o.getBoolean(k));
-            }
-            if (o.has("colors")) ed.putString("colors", o.getString("colors"));
-            ed.apply();
-            buildUi();
-        } catch (JSONException e) {
-            Toast.makeText(this, "Could not load", Toast.LENGTH_SHORT).show();
-        }
-    }
-
-    // The little scale under each slider: tick marks with numbers.
-    static class TicksView extends View {
-        private final int max, step, pad;
-        private final float d;
-        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-
-        TicksView(Context c, int max, int step, int pad, int color) {
-            super(c);
-            this.max = max;
-            this.step = step;
-            this.pad = pad;
-            this.d = c.getResources().getDisplayMetrics().density;
-            p.setColor(color);
-            p.setTextSize(10 * d);
-            p.setTextAlign(Paint.Align.CENTER);
-            p.setStrokeWidth(1.5f * d);
-        }
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            float w = getWidth() - 2f * pad;
-            for (int v = 0; v <= max; v += step) {
-                float x = pad + w * v / max;
-                canvas.drawLine(x, 0, x, 5 * d, p);
-                canvas.drawText(String.valueOf(v), x, 18 * d, p);
-                int mid = v + step / 2;
-                if (step % 2 == 0 && mid < max) {
-                    float x2 = pad + w * mid / max;
-                    canvas.drawLine(x2, 0, x2, 3 * d, p);
-                }
-            }
-        }
-    }
-                    }
+        head.addView(name,
