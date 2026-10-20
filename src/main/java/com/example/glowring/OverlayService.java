@@ -8,6 +8,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
@@ -24,34 +25,56 @@ import android.view.WindowManager;
 
 public class OverlayService extends Service {
 
-    static final String DEFAULT_COLORS = "C6363C,0C4076,FFFFFF";
+    // Colors are "RRGGBB:width" pairs, in order around the ring.
+    static final String DEFAULT_COLORS = "E8202D:1,1E56D8:1,FFFFFF:1";
     static volatile RingView activeRing;
 
     private WindowManager wm;
     private RingView ring;
     private SharedPreferences sp;
 
-    // "C6363C,0C4076,FFFFFF" -> array of ARGB colors
-    static int[] parseColors(String s) {
+    static boolean isRunning() {
+        return activeRing != null;
+    }
+
+    // Returns {colors, widths}.
+    static int[][] parsePalette(String s) {
         try {
             String[] parts = s.split(",");
-            int[] out = new int[parts.length];
+            int[] cols = new int[parts.length];
+            int[] wts = new int[parts.length];
             for (int i = 0; i < parts.length; i++) {
-                out[i] = 0xFF000000 | (int) Long.parseLong(parts[i].trim(), 16);
+                String[] cw = parts[i].trim().split(":");
+                cols[i] = 0xFF000000 | (int) Long.parseLong(cw[0].trim(), 16);
+                int w = 1;
+                if (cw.length > 1) w = Integer.parseInt(cw[1].trim());
+                wts[i] = Math.max(1, Math.min(20, w));
             }
-            return out;
+            return new int[][]{cols, wts};
         } catch (Exception e) {
-            return new int[]{0xFFC6363C, 0xFF0C4076, 0xFFFFFFFF};
+            return new int[][]{{0xFFE8202D, 0xFF1E56D8, 0xFFFFFFFF}, {1, 1, 1}};
         }
     }
 
-    static String joinColors(int[] c) {
+    static String joinPalette(int[] c, int[] w) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < c.length; i++) {
             if (i > 0) sb.append(',');
-            sb.append(String.format("%06X", c[i] & 0xFFFFFF));
+            sb.append(String.format("%06X", c[i] & 0xFFFFFF)).append(':').append(w[i]);
         }
         return sb.toString();
+    }
+
+    // Boosts saturation and lifts dark colors. White, gray and black are left alone.
+    static int vibrance(int color, int k) {
+        if (k <= 0) return color;
+        float[] hsv = new float[3];
+        Color.colorToHSV(color, hsv);
+        if (hsv[1] < 0.15f || hsv[2] < 0.15f) return color;
+        float f = k / 100f;
+        hsv[1] = Math.min(1f, hsv[1] * (1f + f));
+        hsv[2] = Math.min(1f, hsv[2] + (1f - hsv[2]) * f * 0.6f);
+        return Color.HSVToColor(hsv);
     }
 
     // Called by NotifService when a notification arrives.
@@ -139,9 +162,8 @@ public class OverlayService extends Service {
         super.onDestroy();
     }
 
-    // Draws the ring: any number of colors, spin, pulse, comet, notification flash.
+    // Draws the ring: any colors and widths, spin, pulse, comet, notification flash.
     static class RingView extends View {
-        static final long FRAME_MS = 33; // about 30 frames per second
 
         volatile long flashUntil = 0;
 
@@ -185,9 +207,11 @@ public class OverlayService extends Service {
             return super.onApplyWindowInsets(insets);
         }
 
-        private static SweepGradient buildShader(int[] c, boolean smooth, boolean comet,
+        private static SweepGradient buildShader(int[] c, int[] wts, int repeat,
+                                                 boolean smooth, boolean comet,
                                                  float tail, float cx, float cy) {
             int n = c.length;
+
             if (comet) {
                 int[] cols = new int[n + 3];
                 float[] pos = new float[n + 3];
@@ -204,25 +228,48 @@ public class OverlayService extends Service {
                 pos[n + 2] = 1f;
                 return new SweepGradient(cx, cy, cols, pos);
             }
+
+            int rep = Math.max(1, Math.min(repeat, 200 / n));
+            int total = n * rep;
+            float sumW = 0;
+            for (int w : wts) sumW += w;
+            float totalW = sumW * rep;
+
             if (smooth) {
-                int[] cols = new int[n + 1];
-                float[] pos = new float[n + 1];
-                for (int i = 0; i < n; i++) {
-                    cols[i] = c[i];
-                    pos[i] = (float) i / n;
+                int[] cols = new int[total + 1];
+                float[] pos = new float[total + 1];
+                float acc = 0;
+                int idx = 0;
+                for (int r = 0; r < rep; r++) {
+                    for (int i = 0; i < n; i++) {
+                        cols[idx] = c[i];
+                        pos[idx] = acc / totalW;
+                        acc += wts[i];
+                        idx++;
+                    }
                 }
-                cols[n] = c[0];
-                pos[n] = 1f;
+                cols[total] = c[0];
+                pos[total] = 1f;
                 return new SweepGradient(cx, cy, cols, pos);
             }
-            int[] cols = new int[2 * n];
-            float[] pos = new float[2 * n];
-            for (int i = 0; i < n; i++) {
-                cols[2 * i] = c[i];
-                pos[2 * i] = (float) i / n;
-                cols[2 * i + 1] = c[i];
-                pos[2 * i + 1] = (float) (i + 1) / n;
+
+            int[] cols = new int[2 * total];
+            float[] pos = new float[2 * total];
+            float acc = 0;
+            int idx = 0;
+            for (int r = 0; r < rep; r++) {
+                for (int i = 0; i < n; i++) {
+                    float start = acc / totalW;
+                    acc += wts[i];
+                    float end = acc / totalW;
+                    cols[2 * idx] = c[i];
+                    pos[2 * idx] = start;
+                    cols[2 * idx + 1] = c[i];
+                    pos[2 * idx + 1] = end;
+                    idx++;
+                }
             }
+            pos[2 * total - 1] = 1f;
             return new SweepGradient(cx, cy, cols, pos);
         }
 
@@ -231,6 +278,7 @@ public class OverlayService extends Service {
             if (sp.getBoolean("hide_land", true) && getWidth() > getHeight()) return;
             if (sp.getBoolean("hide_full", false) && barsHidden) return;
 
+            long now = SystemClock.uptimeMillis();
             float d = getResources().getDisplayMetrics().density;
             float w = Math.max(2, sp.getInt("w", 30)) * d;
             float h = Math.max(2, sp.getInt("h", 12)) * d;
@@ -243,21 +291,29 @@ public class OverlayService extends Service {
             boolean smooth = sp.getBoolean("smooth", false);
             boolean comet = sp.getBoolean("comet", false);
             float tail = Math.max(10, sp.getInt("tail", 50)) / 100f;
+            int repeat = Math.max(1, sp.getInt("repeat", 1));
+            int vib = sp.getInt("vibrance", 0);
+            int fpsMode = sp.getInt("fpsmode", 1);
             String colorStr = sp.getString("colors", DEFAULT_COLORS);
 
             float cx = getWidth() / 2f + (sp.getInt("px", 300) - 300) * d;
             float cy = sp.getInt("py", 14) * d;
 
-            long now = SystemClock.uptimeMillis();
             boolean flashing = now < flashUntil;
             if (flashing) {
                 t *= 1.6f;
                 speed = Math.max(speed, 20) * 3;
             }
 
-            String key = colorStr + "|" + smooth + "|" + comet + "|" + tail + "|" + cx + "|" + cy;
+            String key = colorStr + "|" + repeat + "|" + vib + "|" + smooth + "|" + comet
+                    + "|" + tail + "|" + cx + "|" + cy;
             if (shader == null || !key.equals(shaderKey)) {
-                shader = buildShader(parseColors(colorStr), smooth, comet, tail, cx, cy);
+                int[][] pal = parsePalette(colorStr);
+                int[] cols = new int[pal[0].length];
+                for (int i = 0; i < cols.length; i++) {
+                    cols[i] = vibrance(pal[0][i], vib);
+                }
+                shader = buildShader(cols, pal[1], repeat, smooth, comet, tail, cx, cy);
                 shaderKey = key;
             }
 
@@ -286,10 +342,19 @@ public class OverlayService extends Service {
             canvas.restore();
 
             if (speed > 0 || pulse > 0 || flashing) {
-                int r = (int) (Math.hypot(w, h) / 2 + t + 8 * d);
-                postInvalidateDelayed(FRAME_MS, (int) cx - r, (int) cy - r,
-                        (int) cx + r, (int) cy + r);
+                int rad = (int) (Math.hypot(w, h) / 2 + t + 8 * d);
+                int l = (int) cx - rad;
+                int tp = (int) cy - rad;
+                int rt = (int) cx + rad;
+                int bt = (int) cy + rad;
+                long target = fpsMode == 0 ? 33 : (fpsMode == 1 ? 16 : 0);
+                long delay = target - (SystemClock.uptimeMillis() - now);
+                if (delay > 0) {
+                    postInvalidateDelayed(delay, l, tp, rt, bt);
+                } else {
+                    postInvalidateOnAnimation(l, tp, rt, bt);
+                }
             }
         }
     }
-}
+        }
