@@ -514,4 +514,108 @@ public class MainActivity extends Activity {
         head.setPadding(0, dp(16), 0, 0);
         TextView name = tv(label, 14, cText, false);
         TextView val = tv(String.valueOf(cur), 14, cAccent, true);
-        head.addView(name,
+        head.addView(name,                 new LinearLayout.LayoutParams(0, WRAP, 1f));
+        head.addView(val);
+        parent.addView(head);
+
+        int pad = dp(14);
+        SeekBar sb = new SeekBar(this);
+        sb.setPadding(pad, dp(8), pad, dp(2));
+        sb.setMax(max);
+        sb.setProgress(cur);
+        sb.setProgressTintList(ColorStateList.valueOf(cAccent));
+        sb.setThumbTintList(ColorStateList.valueOf(cAccent));
+        sb.setProgressBackgroundTintList(ColorStateList.valueOf(cTrack));
+        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar s, int value, boolean fromUser) {
+                sp.edit().putInt(key, value).apply();
+                val.setText(String.valueOf(value));
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar s) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar s) {
+            }
+        });
+        parent.addView(sb, new LinearLayout.LayoutParams(MATCH, WRAP));
+
+        parent.addView(new TicksView(this, max, step, pad, cSub),
+                new LinearLayout.LayoutParams(MATCH, dp(22)));
+        return sb;
+    }
+
+    private void addSwitch(LinearLayout parent, String label, String key, boolean def) {
+        Switch s = new Switch(this);
+        s.setText(label);
+        s.setTextColor(cText);
+        s.setTextSize(14);
+        s.setChecked(sp.getBoolean(key, def));
+        ColorStateList cs = new ColorStateList(
+                new int[][]{{android.R.attr.state_checked}, {}},
+                new int[]{cAccent, cSub});
+        s.setThumbTintList(cs);
+        s.setTrackTintList(cs);
+        s.setOnCheckedChangeListener((b, on) -> sp.edit().putBoolean(key, on).apply());
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(MATCH, WRAP);
+        lp.topMargin = dp(14);
+        parent.addView(s, lp);
+    }
+
+    private void nudge(LinearLayout row, String text, SeekBar sb, int delta) {
+        Button b = button(text, false);
+        b.setOnClickListener(v -> sb.setProgress(
+                Math.max(0, Math.min(sb.getMax(), sb.getProgress() + delta))));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, WRAP, 1f);
+        lp.leftMargin = dp(3);
+        lp.rightMargin = dp(3);
+        row.addView(b, lp);
+    }
+
+    // ---------- colors ----------
+
+    private void refreshPalette() {
+        int[][] p = pal();
+        if (flagLabel != null) {
+            flagLabel.setText("Flag: " + sp.getString("flag", "Serbia"));
+        }
+        if (swatchRow != null) {
+            swatchRow.removeAllViews();
+            for (int i = 0; i < p[0].length; i++) {
+                final int idx = i;
+                View swatch = new View(this);
+                GradientDrawable gd = rounded(p[0][i], 12);
+                gd.setStroke(dp(2), cSub);
+                swatch.setBackground(gd);
+                swatch.setOnClickListener(v -> showColorDialog(idx));
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(48), dp(48));
+                lp.rightMargin = dp(8);
+                swatchRow.addView(swatch, lp);
+            }
+        }
+        if (stripeBox != null) {
+            stripeBox.removeAllViews();
+            for (int i = 0; i < p[0].length; i++) {
+                View seg = new View(this);
+                seg.setBackgroundColor(p[0][i]);
+                stripeBox.addView(seg, new LinearLayout.LayoutParams(0, MATCH, (float) p[1][i]));
+            }
+        }
+    }
+
+    private void addColor() {
+        int[][] q = pal();
+        if (q[0].length >= 30) {
+            Toast.makeText(this, "Maximum is 30 colors", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        int[] c = Arrays.copyOf(q[0], q[0].length + 1);
+        int[] w = Arrays.copyOf(q[1], q[1].length + 1);
+        c[c.length - 1] = 0xFFFFFFFF;
+        w[w.length - 1] = 1;
+        savePal(c, w);
+        showColorDialog(c.length - 1);
+    }
