@@ -618,4 +618,6 @@ public class MainActivity extends Activity {
         w[w.length - 1] = 1;
         savePal(c, w);
         showColorDialog(c.length - 1);
-    }
+            }
+}
+    
